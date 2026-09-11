@@ -1,7 +1,7 @@
 {
  "budgetKRW": 12000,
  "since": "2026-09-11T13:48:04.000Z",
- "spentKRW": 168.72,
+ "spentKRW": 568.72,
  "searchQueriesByMonth": {
   "2026-09": 0
  },
@@ -25,6 +25,16 @@
    "searchQueries": 0,
    "krw": 64.22,
    "summary": "카드 3/3장(메인 1장) 생성, 실패 0회 · 누적 153장 · 검색 확인 응답 0/2 · 이번 예상 지출 ₩64 (누적 ₩169 / ₩150)"
+  },
+  {
+   "at": "2026-09-11T14:40:00.000Z",
+   "calls": 6,
+   "grounded": 0,
+   "inputTokens": 0,
+   "outputTokens": 0,
+   "searchQueries": 0,
+   "krw": 400,
+   "summary": "수동 추정: 3.8 Flash medium 시험 실행을 취소해 기록되지 않은 지출 (약 ₩400으로 추정)"
   }
  ]
 }
