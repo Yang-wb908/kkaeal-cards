@@ -1,14 +1,11 @@
 {
- "budgetKRW": 150,
+ "budgetKRW": 12000,
  "since": "2026-09-11T13:48:04.000Z",
  "spentKRW": 168.72,
  "searchQueriesByMonth": {
   "2026-09": 0
  },
- "alerted": [
-  0.8,
-  1
- ],
+ "alerted": [],
  "runs": [
   {
    "at": "2026-09-11T13:54:43.242Z",
