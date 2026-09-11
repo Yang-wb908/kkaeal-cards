@@ -34,7 +34,7 @@ const THINKING_LEVEL = process.env.THINKING_LEVEL || 'low';
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
 const GROUNDING = process.env.GROUNDING === '1';
-const WIKI_TEXT_MAX = 14000; // 대조할 때 모델에 넘기는 위키백과 본문 최대 글자 수
+const WIKI_TEXT_MAX = 20000; // 대조할 때 모델에 넘기는 위키백과 본문 최대 글자 수
 const TODAY = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); // YYYY-MM-DD (한국 시간)
 const FIRST_COUNT = 90; // 첫 실행 카드 수
 const WEEKLY_COUNT = 45; // 매주 카드 수 (메인 약 15장) — 예산 ₩12,000으로 한두 달 가도록 맞춘 양
@@ -278,13 +278,14 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
   "hook": "읽고 싶게 만드는 한 문장 티저",
   "description": "본문 설명",
   "keyword": "위키백과에서 검색할 핵심 키워드 하나",
-  "wiki": "이 카드의 핵심 사실이 나오는 한국어 위키백과 문서의 정확한 제목. 한국어 문서가 없으면 'en:영어 위키백과 제목'",
+  "wiki": "이 카드의 핵심 사실이 나오는 한국어 위키백과 문서의 정확한 제목 (없으면 빈 문자열)",
+  "wikiEn": "같은 사실이 나오는 영어 위키백과 문서의 정확한 제목",
   "quiz": { "question": "객관식 문제", "options": ["보기1", "보기2", "보기3", "보기4"], "answer": "정답 보기의 텍스트를 options와 똑같이", "explanation": "정답 해설 한두 문장" },
   "deepDive": "3문단 심화 설명",
   "followUps": [
     {
       "question": "이어서 궁금해질 짧은 질문 (20자 이내)",
-      "card": { "category": "분야", "title": "...", "hook": "...", "description": "...", "keyword": "...", "wiki": "...",
+      "card": { "category": "분야", "title": "...", "hook": "...", "description": "...", "keyword": "...", "wiki": "...", "wikiEn": "...",
                 "quiz": { "question": "...", "options": ["...", "...", "...", "..."], "answer": "...", "explanation": "..." },
                 "deepDive": "..." }
     },
@@ -463,6 +464,7 @@ function cleanCard(raw, fallbackCategory) {
     description,
     keyword: clean(raw.keyword) || title,
     wiki: clean(raw.wiki).slice(0, 120),
+    wikiEn: clean(raw.wikiEn).replace(/^en\s*:\s*/i, '').slice(0, 120),
     quiz: cleanQuiz(raw.quiz),
     deepDive: clean(raw.deepDive),
   };
@@ -512,6 +514,13 @@ async function wikiText(link, card) {
     picked.push(p);
     budget -= p.t.length;
   }
+  // 겹치는 문단이 적으면(영어 문서 등) 앞에서부터 차례로 채운다
+  for (const p of paras) {
+    if (budget < 500) break;
+    if (picked.includes(p) || lead.includes(p.t) || p.t.length > budget) continue;
+    picked.push(p);
+    budget -= p.t.length;
+  }
   return [lead, ...picked.sort((a, b) => a.i - b.i).map((p) => p.t)].join('\n');
 }
 
@@ -524,11 +533,11 @@ async function verifyAgainstWiki(card, link) {
   if (text.length < 200) return { verdict: 'unknown', reason: '문서 본문을 가져오지 못함' };
   const quiz = card.quiz ? `${card.quiz.question} / 정답: ${card.quiz.options[card.quiz.answer]}` : '없음';
   const prompt = `
-너는 꼼꼼한 사실 확인 담당자야. [문서]는 위키백과 '${link.page}' 문서 내용이야.
+너는 꼼꼼한 사실 확인 담당자야. [문서]는 ${link.lang === 'en' ? '영어' : '한국어'} 위키백과 '${link.page}' 문서 내용이야. 카드는 한국어지만 문서 언어와 상관없이 같은 사실인지 판정한다.
 [카드]에서 핵심 주장 2~4개를 뽑아, 각각 [문서]로 뒷받침되는지 판정해.
 - 첫 번째 주장은 반드시 카드 제목이 말하는 가장 핵심적인 사실로 한다. 숫자·연도·인명이 있으면 그대로 포함한다.
 - status: 문서에 같은 내용이 있으면 "supported", 문서 내용과 어긋나면 "contradicted", 문서에서 찾을 수 없으면 "missing".
-- quote: supported나 contradicted일 때 근거가 되는 [문서]의 문장을 한 글자도 바꾸지 말고 그대로 복사한다 (40~200자). missing이면 빈 문자열.
+- quote: supported나 contradicted일 때 근거가 되는 [문서]의 문장을 번역하지 말고 문서 언어 그대로, 한 글자도 바꾸지 말고 복사한다 (40~200자). missing이면 빈 문자열.
 - 문서에 없는 내용을 추측으로 supported라고 하지 않는다. 비슷하지만 숫자나 대상이 다르면 contradicted 또는 missing이다.
 JSON 객체 하나로만 답해: {"claims": [{"claim": "주장", "status": "supported | contradicted | missing", "quote": "문서 원문"}]}
 
@@ -550,9 +559,14 @@ ${text}`.trim();
   }
   if (!Array.isArray(claims) || !claims.length) return { verdict: 'unknown', reason: '판정 결과 없음' };
   const doc = norm(text);
+  // 인용이 문서에 있는지: 그대로 있으면 통과, 조금 다듬어졌으면 6글자 조각의 절반 이상이 문서에 있어야 통과
   const found = (q) => {
     const n = norm(q);
-    return n.length >= 10 && doc.includes(n);
+    if (n.length < 10) return false;
+    if (doc.includes(n)) return true;
+    const pieces = [];
+    for (let i = 0; i + 6 <= n.length; i += 3) pieces.push(n.slice(i, i + 6));
+    return pieces.length > 0 && pieces.filter((p) => doc.includes(p)).length / pieces.length >= 0.5;
   };
   const results = claims.slice(0, 4).map((c) => {
     const status = clean(c?.status);
@@ -591,39 +605,44 @@ async function wikiSearch(query, card) {
   return null;
 }
 
-async function findSource(card) {
-  if (DRY) return null;
+// 대조할 문서 후보: 한국어 문서(정확한 제목 → 없으면 검색), 영어 문서(정확한 제목). 영어 문서가 훨씬 자세한 경우가 많다
+async function findSources(card) {
+  if (DRY) return [];
   const wiki = card.wiki ?? '';
-  const en = wiki.match(/^en\s*:\s*(.+)$/i);
-  if (en) {
-    const hit = await wikiExact('en', en[1].trim());
-    if (hit) return hit;
-  } else if (wiki) {
-    const hit = await wikiExact('ko', wiki);
-    if (hit) return hit;
-  }
-  return (await wikiSearch(card.keyword, card)) || (card.keyword !== card.title ? await wikiSearch(card.title, card) : null);
+  const enTitle = card.wikiEn || wiki.match(/^en\s*:\s*(.+)$/i)?.[1]?.trim() || '';
+  const ko =
+    (wiki && !/^en\s*:/i.test(wiki) ? await wikiExact('ko', wiki) : null) ||
+    (await wikiSearch(card.keyword, card)) ||
+    (card.keyword !== card.title ? await wikiSearch(card.title, card) : null);
+  const en = enTitle ? await wikiExact('en', enTitle) : null;
+  return [ko, en].filter(Boolean);
 }
 
 const checkStats = { ok: 0, partial: 0, wrong: 0, unknown: 0, noSource: 0 };
 
 // 위키백과 문서를 찾아 대조한다. '맞음'이면 확인 표시, '일부 확인'이면 표시 없이 쓰고, 나머지는 버린다(null)
 async function checkCard(card) {
-  const { wiki, ...rest } = card;
-  const link = await findSource(card);
-  if (!link && !DRY) {
+  const { wiki, wikiEn, ...rest } = card;
+  const links = DRY ? [{ lang: 'ko', page: card.title, title: '', url: '' }] : await findSources(card);
+  if (!links.length) {
     checkStats.noSource++;
     console.log(`    ✗ 버림 (위키백과 문서 없음): ${card.title}`);
     return null;
   }
-  const { verdict, reason } = await verifyAgainstWiki(card, link ?? { lang: 'ko', page: card.title });
-  checkStats[verdict]++;
-  if (verdict === 'wrong' || verdict === 'unknown') {
-    console.log(`    ✗ 버림 (${verdict === 'wrong' ? '틀림' : '확인 불가'}): ${card.title} — ${reason}`);
-    return null;
+  // 한국어 문서로 확인이 안 되면 영어 문서로 한 번 더 대조한다. 문서와 어긋나면 바로 버린다
+  let last = { verdict: 'unknown', reason: '' };
+  for (const link of links) {
+    last = await verifyAgainstWiki(card, link);
+    if (last.verdict === 'wrong') break;
+    if (last.verdict === 'ok' || last.verdict === 'partial') {
+      checkStats[last.verdict]++;
+      const sources = [link, ...links.filter((l) => l !== link)].filter((l) => l.url).map((l) => ({ title: l.title, url: l.url }));
+      return { ...rest, sources, verified: last.verdict === 'ok' };
+    }
   }
-  const source = link ? { title: link.title, url: link.url } : null;
-  return { ...rest, sources: source ? [source] : [], verified: verdict === 'ok' };
+  checkStats[last.verdict]++;
+  console.log(`    ✗ 버림 (${last.verdict === 'wrong' ? '틀림' : '확인 불가'}): ${card.title} — ${last.reason}`);
+  return null;
 }
 
 // ───────────────────────── 카드 한 묶음(메인 + 꼬리 2장) 만들기 ─────────────────────────
@@ -696,7 +715,7 @@ async function main() {
   // 목표는 꼬리 카드까지 합친 전체 장수. 메인 1장당 보통 3장(메인 + 꼬리 2)이 나오므로 메인은 약 1/3,
   // 꼬리 카드가 빠지는 경우를 대비해 계획은 넉넉히 세우고 목표에 닿으면 멈춘다
   const target = Number(process.env.COUNT) || (index.packs.length === 0 ? FIRST_COUNT : WEEKLY_COUNT);
-  const plan = makePlan(Math.ceil(target / 3) * 2 + 3); // 대조에서 버려지는 카드가 있어 넉넉히 계획하고 목표에 닿으면 멈춘다
+  const plan = makePlan(Math.ceil(target / 3) * 4 + 5); // 대조에서 버려지는 카드가 많아 넉넉히 계획하고 목표에 닿으면 멈춘다
   const runId = stamp();
   const startedAt = Date.now();
 
