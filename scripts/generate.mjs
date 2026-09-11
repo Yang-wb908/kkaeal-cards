@@ -156,7 +156,7 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
 - 오늘은 ${TODAY}이다. 쓰기 전에 Google 검색으로 핵심 사실(숫자·연도·인명·기록)을 확인한다.
 - '지금도 살아 있다', '현재 세계 최고/최대', '가장 최근', '아직 풀리지 않았다'처럼 시간이 지나면 바뀌는 사실은 오늘 기준으로 여전히 맞는지 검색으로 확인하고, 확인되지 않으면 그 주제는 쓰지 않는다. 가능하면 시간이 지나도 변하지 않는 사실을 고른다.
 - 학계나 신뢰할 수 있는 자료로 검증된 사실만 쓴다. 속설, 도시전설, 출처가 불분명한 통계는 쓰지 않는다. 확실하지 않으면 다른 주제를 고른다.
-- 숫자·연도·인명은 널리 확인되는 값만 쓴다.
+- 숫자·연도·인명은 널리 확인되는 값만 쓰고, 제목·티저·퀴즈에 나오는 숫자는 본문과 똑같이 맞춘다.
 - 검색 결과에서 직접 확인한 내용만 쓴다. 검색으로 확인되지 않는 판결·통계·기록·인용은 쓰지 않는다.
 - 모든 텍스트는 자연스러운 한국어로 쓰고 마크다운 기호나 출처 표기는 넣지 않는다.
 - 퀴즈는 본문을 읽으면 풀 수 있게 내고, "본문에 따르면" 같은 말로 시작하지 않는다. 보기는 4개, 정답은 하나.
@@ -189,6 +189,7 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
 
 const noThinking = new Set();
 const noSearch = new Set(); // 검색 도구와 JSON 응답을 함께 못 쓰는 모델
+let loggedResponseShape = false; // 첫 응답의 검색 정보·토큰 수를 한 번만 기록
 
 async function gemini(prompt) {
   if (DRY) return { text: JSON.stringify(mockResponse()), grounded: true };
@@ -217,8 +218,15 @@ async function gemini(prompt) {
         const data = await res.json();
         const cand = data.candidates?.[0];
         const text = (cand?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? '').join('');
-        const gm = cand?.groundingMetadata;
-        const grounded = Boolean(gm?.webSearchQueries?.length || gm?.groundingChunks?.length);
+        const gm = cand?.groundingMetadata ?? cand?.grounding_metadata;
+        // 모델마다 채워 주는 항목이 달라서, 검색 흔적이 하나라도 있으면 검색 확인으로 본다
+        const grounded = Boolean(
+          gm && (gm.webSearchQueries?.length || gm.groundingChunks?.length || gm.groundingSupports?.length || gm.searchEntryPoint)
+        );
+        if (!loggedResponseShape) {
+          loggedResponseShape = true;
+          console.log(`  (응답 확인: ${model} · 검색 정보 ${gm ? Object.keys(gm).join(',') || '빈 값' : '없음'} · 토큰 ${JSON.stringify(data.usageMetadata ?? {})})`);
+        }
         if (text.trim()) return { text, grounded };
         lastError = `${model} empty response`;
         continue;
