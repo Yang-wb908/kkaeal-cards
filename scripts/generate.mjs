@@ -7,8 +7,8 @@
 // 환경 변수
 //   GEMINI_API_KEY  (필수, DRY_RUN=1 이면 없어도 됨)
 //   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 180, 이후 90 — 메인 카드는 약 1/3)
-//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.8-flash,gemini-3.5-flash — 3.8은 2026년 말까지 요금이 절반 이하)
-//                   Flash-Lite는 더 싸지만 검색을 스스로 하지 않아서 쓰지 않는다
+//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.5-flash,gemini-3.8-flash)
+//                   3.8 Flash·Flash-Lite는 더 싸지만 시험해 보니 검색을 스스로 하지 않아서 뒤로 뺐다
 //   THINKING_LEVEL  minimal | low | medium | high (기본 low)
 //   DELAY_MS        요청 사이 간격 (기본 4000)
 //   MAX_MINUTES     이 시간이 지나면 만든 데까지 저장하고 끝낸다 (기본 240)
@@ -28,7 +28,7 @@ const INDEX_FILE = path.join(CARDS_DIR, 'index.json');
 
 const DRY = process.env.DRY_RUN === '1';
 const KEY = process.env.GEMINI_API_KEY || '';
-const MODELS = (process.env.MODELS || 'gemini-3.8-flash,gemini-3.5-flash').split(',').map((s) => s.trim()).filter(Boolean);
+const MODELS = (process.env.MODELS || 'gemini-3.5-flash,gemini-3.8-flash').split(',').map((s) => s.trim()).filter(Boolean);
 const THINKING_LEVEL = process.env.THINKING_LEVEL || 'low'; // medium은 생각 토큰이 많아 비용이 몇 배로 뛴다
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
@@ -63,7 +63,7 @@ const SEARCH_FREE_PER_MONTH = 5000; // Gemini 3.x 검색 그라운딩 무료 횟
 const SEARCH_USD_PER_1000 = 14;
 const ALERT_LEVELS = [0.8, 1];
 
-const usage = { data: null, run: { calls: 0, inputTokens: 0, outputTokens: 0, searchQueries: 0, krw: 0 }, alerts: [] };
+const usage = { data: null, run: { calls: 0, grounded: 0, inputTokens: 0, outputTokens: 0, searchQueries: 0, krw: 0 }, alerts: [] };
 
 function priceFor(model, now = new Date()) {
   const rows = PRICES[model];
@@ -299,6 +299,7 @@ async function gemini(prompt) {
   if (DRY) return { text: JSON.stringify(mockResponse()), grounded: true };
   let quotaHits = 0;
   let lastError = '';
+  let retriedUngrounded = false;
   for (const model of MODELS) {
     for (let attempt = 0; attempt < 3; attempt++) {
       const generationConfig = { responseMimeType: 'application/json' };
@@ -332,6 +333,13 @@ async function gemini(prompt) {
           console.log(`  (응답 확인: ${model} · 검색 정보 ${gm ? Object.keys(gm).join(',') || '빈 값' : '없음'} · 토큰 ${JSON.stringify(data.usageMetadata ?? {})})`);
         }
         recordCall(model, data.usageMetadata, gm?.webSearchQueries?.length ?? 0);
+        if (grounded) usage.run.grounded++;
+        // 검색을 안 하고 답하면 한 번만 다시 묻는다 (그래도 안 하면 '검색 확인' 없이 쓴다)
+        if (body.tools && !grounded && !retriedUngrounded && text.trim()) {
+          retriedUngrounded = true;
+          attempt--;
+          continue;
+        }
         if (text.trim()) return { text, grounded };
         lastError = `${model} empty response`;
         continue;
@@ -669,7 +677,7 @@ async function main() {
   }
   await flush();
 
-  const spent = DRY ? '' : ` · 이번 예상 지출 ${won(usage.run.krw)} (누적 ${won(usage.data.spentKRW)} / ${won(usage.data.budgetKRW)})`;
+  const spent = DRY ? '' : ` · 검색 확인 응답 ${usage.run.grounded}/${usage.run.calls} · 이번 예상 지출 ${won(usage.run.krw)} (누적 ${won(usage.data.spentKRW)} / ${won(usage.data.budgetKRW)})`;
   const summary = `카드 ${madeCards}/${target}장(메인 ${made}장) 생성, 실패 ${failures}회${stopReason ? ` · 중단: ${stopReason}` : ''} · 누적 ${index.totalCards}장${spent}`;
   console.log(summary);
   await saveUsage(summary);
