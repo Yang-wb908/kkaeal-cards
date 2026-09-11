@@ -6,12 +6,13 @@
 
 ```
 cards/index.json          묶음 목록 (앱이 가장 먼저 읽는 파일)
-cards/packs/<id>.json      카드 묶음 (메인 카드 50장 + 꼬리 물기 카드, 약 150장)
+cards/packs/<id>.json      카드 묶음 (한 파일에 최대 약 150장)
 scripts/generate.mjs       Gemini로 카드를 만드는 스크립트 (의존성 없음, Node 20+)
-.github/workflows/         매주 월요일 03:00(KST)에 새 카드 150장을 만드는 워크플로
+.github/workflows/         매주 월요일 03:00(KST)에 새 카드 90장을 만드는 워크플로
 ```
 
-`COUNT`와 150장·300장은 꼬리 물기 카드까지 합친 장수입니다 (메인 카드는 약 1/3).
+`COUNT`와 90장·180장은 꼬리 물기 카드까지 합친 장수입니다 (메인 카드는 약 1/3).
+비용을 줄이려고 기본 모델은 `gemini-3.1-flash-lite`(생각 수준 low)입니다. 월 지출 한도(₩5,000) 안에 들도록 맞춘 설정이에요.
 생성할 때 Gemini가 Google 검색으로 오늘 날짜 기준 사실인지 확인합니다 (`GROUNDING=0`이면 끔).
 
 카드 하나에는 본문, 확인 퀴즈, 심화 설명(더 깊이 알아보기), 위키백과 출처, 이어지는 질문 2개가 들어 있습니다.
@@ -22,7 +23,7 @@ scripts/generate.mjs       Gemini로 카드를 만드는 스크립트 (의존성
 1. Settings → Secrets and variables → Actions → New repository secret
    - Name: `GEMINI_API_KEY`
    - Secret: Google AI Studio에서 받은 Gemini API 키
-2. Actions 탭 → "카드 묶음 만들기" → Run workflow (처음엔 300장을 만듭니다)
+2. Actions 탭 → "카드 묶음 만들기" → Run workflow (처음엔 180장을 만듭니다)
 
 ## 직접 돌려 보기
 
