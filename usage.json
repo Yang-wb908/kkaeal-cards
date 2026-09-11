@@ -1,7 +1,7 @@
 {
- "budgetKRW": 12000,
+ "budgetKRW": 20000,
  "since": "2026-09-11T13:48:04.000Z",
- "spentKRW": 1695.38,
+ "spentKRW": 1966,
  "searchQueriesByMonth": {
   "2026-09": 4
  },
@@ -85,6 +85,16 @@
    "searchQueries": 0,
    "krw": 192.5,
    "summary": "카드 14/12장(메인 6장) 생성, 실패 0회 · 누적 186장 · 대조: 맞음 10, 일부 확인 6, 틀림 3, 확인 불가 4, 문서 없음 0 (메인 버림 6) · 이번 예상 지출 ₩193 (누적 ₩1,695 / ₩12,000)"
+  },
+  {
+   "at": "2026-09-11T15:20:00.000Z",
+   "calls": 0,
+   "grounded": 0,
+   "inputTokens": 0,
+   "outputTokens": 0,
+   "searchQueries": 0,
+   "krw": 270.62,
+   "summary": "수동 보정: AI Studio 지출 화면 기준 실제 지출(₩7,002 → ₩8,968, 약 ₩1,966)에 맞춤"
   }
  ]
 }
