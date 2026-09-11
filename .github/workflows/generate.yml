@@ -1,0 +1,50 @@
+name: 카드 묶음 만들기
+
+on:
+  schedule:
+    - cron: '0 18 * * 0' # 매주 월요일 03:00 (한국 시간)
+  workflow_dispatch:
+    inputs:
+      count:
+        description: '만들 메인 카드 수 (비우면 첫 실행 300, 이후 150)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: generate-cards
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 카드 생성
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          COUNT: ${{ github.event.inputs.count }}
+          MAX_MINUTES: '240'
+        run: node scripts/generate.mjs
+
+      # 생성이 중간에 멈춰도 저장된 묶음은 올린다
+      - name: 저장소에 올리기
+        if: always()
+        run: |
+          git config user.name "kkaeal-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cards
+          if git diff --cached --quiet; then
+            echo "새 카드 없음"
+          else
+            git commit -m "cards: $(date -u +%Y-%m-%d) 카드 묶음 추가"
+            git push
+          fi
