@@ -1,8 +1,20 @@
 {
  "budgetKRW": 12000,
  "since": "2026-09-11T13:48:04.000Z",
- "spentKRW": 0,
- "searchQueriesByMonth": {},
+ "spentKRW": 104.5,
+ "searchQueriesByMonth": {
+  "2026-09": 0
+ },
  "alerted": [],
- "runs": []
+ "runs": [
+  {
+   "at": "2026-09-11T13:54:43.242Z",
+   "calls": 4,
+   "inputTokens": 7432,
+   "outputTokens": 7337,
+   "searchQueries": 0,
+   "krw": 104.51,
+   "summary": "카드 3/3장(메인 1장) 생성, 실패 0회 · 누적 150장 · 이번 예상 지출 ₩105 (누적 ₩105 / ₩12,000)"
+  }
+ ]
 }
