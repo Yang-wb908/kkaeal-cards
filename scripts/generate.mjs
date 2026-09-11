@@ -7,7 +7,8 @@
 // 환경 변수
 //   GEMINI_API_KEY  (필수, DRY_RUN=1 이면 없어도 됨)
 //   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 180, 이후 90 — 메인 카드는 약 1/3)
-//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.1-flash-lite,gemini-3.5-flash-lite — 비용이 적은 모델)
+//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.5-flash,gemini-3.8-flash)
+//                   Flash-Lite는 더 싸지만 검색을 스스로 하지 않아서 쓰지 않는다
 //   THINKING_LEVEL  minimal | low | medium | high (기본 low)
 //   DELAY_MS        요청 사이 간격 (기본 4000)
 //   MAX_MINUTES     이 시간이 지나면 만든 데까지 저장하고 끝낸다 (기본 240)
@@ -25,8 +26,8 @@ const INDEX_FILE = path.join(CARDS_DIR, 'index.json');
 
 const DRY = process.env.DRY_RUN === '1';
 const KEY = process.env.GEMINI_API_KEY || '';
-const MODELS = (process.env.MODELS || 'gemini-3.1-flash-lite,gemini-3.5-flash-lite').split(',').map((s) => s.trim()).filter(Boolean);
-const THINKING_LEVEL = process.env.THINKING_LEVEL || 'low';
+const MODELS = (process.env.MODELS || 'gemini-3.5-flash,gemini-3.8-flash').split(',').map((s) => s.trim()).filter(Boolean);
+const THINKING_LEVEL = process.env.THINKING_LEVEL || 'low'; // medium은 생각 토큰이 많아 비용이 몇 배로 뛴다
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
 const GROUNDING = process.env.GROUNDING !== '0';
