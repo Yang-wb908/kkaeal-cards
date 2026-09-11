@@ -6,10 +6,10 @@
 //
 // 환경 변수
 //   GEMINI_API_KEY  (필수, DRY_RUN=1 이면 없어도 됨)
-//   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 180, 이후 90 — 메인 카드는 약 1/3)
+//   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 90, 이후 45 — 메인 카드는 약 1/3)
 //   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.5-flash,gemini-3.8-flash)
 //                   3.8 Flash·Flash-Lite는 더 싸지만 시험해 보니 검색을 스스로 하지 않아서 뒤로 뺐다
-//   THINKING_LEVEL  minimal | low | medium | high (기본 low)
+//   THINKING_LEVEL  minimal | low | medium | high (기본 medium — low는 검색을 건너뛰는 일이 많다)
 //   DELAY_MS        요청 사이 간격 (기본 4000)
 //   MAX_MINUTES     이 시간이 지나면 만든 데까지 저장하고 끝낸다 (기본 240)
 //   GROUNDING=0     Google 검색 그라운딩 끄기 (기본 켜짐: 오늘 기준으로 사실을 검색해 확인)
@@ -29,13 +29,13 @@ const INDEX_FILE = path.join(CARDS_DIR, 'index.json');
 const DRY = process.env.DRY_RUN === '1';
 const KEY = process.env.GEMINI_API_KEY || '';
 const MODELS = (process.env.MODELS || 'gemini-3.5-flash,gemini-3.8-flash').split(',').map((s) => s.trim()).filter(Boolean);
-const THINKING_LEVEL = process.env.THINKING_LEVEL || 'low'; // medium은 생각 토큰이 많아 비용이 몇 배로 뛴다
+const THINKING_LEVEL = process.env.THINKING_LEVEL || 'medium'; // low는 싸지만 검색을 건너뛰는 일이 많다
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
 const GROUNDING = process.env.GROUNDING !== '0';
 const TODAY = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); // YYYY-MM-DD (한국 시간)
-const FIRST_COUNT = 180; // 첫 실행 카드 수
-const WEEKLY_COUNT = 90; // 매주 카드 수 (메인 약 30장) — 월 지출 한도 ₩5,000 안에 맞춘 양
+const FIRST_COUNT = 90; // 첫 실행 카드 수
+const WEEKLY_COUNT = 45; // 매주 카드 수 (메인 약 15장) — 예산 ₩12,000으로 한두 달 가도록 맞춘 양
 const PACK_CARDS = 150; // 묶음 하나에 카드 약 150장 (메인 약 50장 + 꼬리 카드)
 const DEEP_RATIO = 0.4; // 메인 카드 중 심화 지식 비율
 const MAX_FAILURES = 25;
