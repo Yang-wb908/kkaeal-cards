@@ -11,6 +11,8 @@ scripts/generate.mjs       Gemini로 카드를 만드는 스크립트 (의존성
 .github/workflows/         매주 월요일 03:00(KST)에 새 카드 150장을 만드는 워크플로
 ```
 
+`COUNT`와 150장·300장은 꼬리 물기 카드까지 합친 장수입니다 (메인 카드는 약 1/3).
+
 카드 하나에는 본문, 확인 퀴즈, 심화 설명(더 깊이 알아보기), 위키백과 출처, 이어지는 질문 2개가 들어 있습니다.
 이어지는 질문마다 답하는 카드가 같은 묶음 안에 따로 있어서(`parentKey`로 연결), 앱에서 꼬리 물기를 누르면 바로 열립니다.
 
@@ -24,8 +26,8 @@ scripts/generate.mjs       Gemini로 카드를 만드는 스크립트 (의존성
 ## 직접 돌려 보기
 
 ```bash
-GEMINI_API_KEY=... COUNT=5 node scripts/generate.mjs   # 실제 생성
-DRY_RUN=1 COUNT=5 node scripts/generate.mjs            # API 없이 흐름만 확인
+GEMINI_API_KEY=... COUNT=6 node scripts/generate.mjs   # 실제 생성 (메인 2장 + 꼬리 4장)
+DRY_RUN=1 COUNT=6 node scripts/generate.mjs            # API 없이 흐름만 확인
 ```
 
 ## 카드 형식
