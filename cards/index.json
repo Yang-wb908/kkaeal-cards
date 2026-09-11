@@ -1,6 +1,14 @@
 {
  "version": 1,
- "updated": null,
- "totalCards": 0,
- "packs": []
+ "updated": "2026-09-11T12:30:37.913Z",
+ "totalCards": 51,
+ "packs": [
+  {
+   "id": "20260911-121140-1",
+   "file": "packs/20260911-121140-1.json",
+   "roots": 17,
+   "cards": 51,
+   "created": "2026-09-11T12:30:37.913Z"
+  }
+ ]
 }
