@@ -2,11 +2,19 @@ name: 카드 묶음 만들기
 
 on:
   schedule:
-    - cron: '0 18 * * 0' # 매주 월요일 03:00 (한국 시간), 카드 90장
+    - cron: '0 18 * * 0' # 매주 월요일 03:00 (한국 시간), 카드 45장
   workflow_dispatch:
     inputs:
       count:
-        description: '만들 카드 수, 꼬리 물기 카드 포함 (비우면 첫 실행 180, 이후 90)'
+        description: '만들 카드 수, 꼬리 물기 카드 포함 (비우면 첫 실행 90, 이후 45)'
+        required: false
+        default: ''
+      models:
+        description: '모델 목록 (비우면 기본값, 시험용)'
+        required: false
+        default: ''
+      thinking:
+        description: '생각 수준 minimal/low/medium/high (비우면 기본값, 시험용)'
         required: false
         default: ''
 
@@ -33,6 +41,8 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COUNT: ${{ github.event.inputs.count }}
+          MODELS: ${{ github.event.inputs.models }}
+          THINKING_LEVEL: ${{ github.event.inputs.thinking }}
           MAX_MINUTES: '240'
         run: node scripts/generate.mjs
 
