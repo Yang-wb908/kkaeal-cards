@@ -1,18 +1,18 @@
 // 오늘의 깨알 — 카드 묶음 생성기
 //
 // Gemini로 깨알 카드를 만들고(카드마다 심화 설명, 확인 퀴즈, 꼬리 물기 카드 2장 포함),
-// 위키백과에서 출처를 찾아 붙인 뒤 cards/packs/*.json 과 cards/index.json 에 저장한다.
+// 카드마다 위키백과 문서 본문을 가져와 내용이 맞는지 대조한 뒤(틀리거나 확인 못 한 카드는 버린다) cards/packs/*.json 과 cards/index.json 에 저장한다.
 // 앱은 index.json 을 읽고 아직 받지 않은 묶음만 내려받는다. 의존성 없이 Node 20+ 에서 돈다.
 //
 // 환경 변수
 //   GEMINI_API_KEY  (필수, DRY_RUN=1 이면 없어도 됨)
 //   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 90, 이후 45 — 메인 카드는 약 1/3)
-//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.5-flash,gemini-3.8-flash)
-//                   3.8 Flash·Flash-Lite는 더 싸지만 시험해 보니 검색을 스스로 하지 않아서 뒤로 뺐다
-//   THINKING_LEVEL  minimal | low | medium | high (기본 medium — low는 검색을 건너뛰는 일이 많다)
+//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.1-flash-lite,gemini-3.5-flash-lite)
+//                   사실 확인은 위키백과 대조로 하므로 싼 모델로 충분하다
+//   THINKING_LEVEL  minimal | low | medium | high (기본 low)
 //   DELAY_MS        요청 사이 간격 (기본 4000)
 //   MAX_MINUTES     이 시간이 지나면 만든 데까지 저장하고 끝낸다 (기본 240)
-//   GROUNDING=0     Google 검색 그라운딩 끄기 (기본 켜짐: 오늘 기준으로 사실을 검색해 확인)
+//   GROUNDING=1     Gemini의 Google 검색 그라운딩도 켜기 (기본 꺼짐 — 모델이 검색을 건너뛰는 일이 많고 비싸다)
 //   DRY_RUN=1       API 없이 가짜 카드로 흐름만 확인
 //   BUDGET_KRW      usage.json이 처음 만들어질 때의 예산 (기본 12000). 이후엔 usage.json의 budgetKRW를 고친다
 //   USD_KRW         달러→원 환율 (기본 1400)
@@ -29,11 +29,12 @@ const INDEX_FILE = path.join(CARDS_DIR, 'index.json');
 
 const DRY = process.env.DRY_RUN === '1';
 const KEY = process.env.GEMINI_API_KEY || '';
-const MODELS = (process.env.MODELS || 'gemini-3.5-flash,gemini-3.8-flash').split(',').map((s) => s.trim()).filter(Boolean);
-const THINKING_LEVEL = process.env.THINKING_LEVEL || 'medium'; // low는 싸지만 검색을 건너뛰는 일이 많다
+const MODELS = (process.env.MODELS || 'gemini-3.1-flash-lite,gemini-3.5-flash-lite').split(',').map((s) => s.trim()).filter(Boolean);
+const THINKING_LEVEL = process.env.THINKING_LEVEL || 'low';
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
-const GROUNDING = process.env.GROUNDING !== '0';
+const GROUNDING = process.env.GROUNDING === '1';
+const WIKI_TEXT_MAX = 14000; // 대조할 때 모델에 넘기는 위키백과 본문 최대 글자 수
 const TODAY = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); // YYYY-MM-DD (한국 시간)
 const FIRST_COUNT = 90; // 첫 실행 카드 수
 const WEEKLY_COUNT = 45; // 매주 카드 수 (메인 약 15장) — 예산 ₩12,000으로 한두 달 가도록 맞춘 양
@@ -260,11 +261,11 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
 - 다음 주제와 겹치지 않게 한다: ${avoid}
 
 [공통 규칙]
-- 오늘은 ${TODAY}이다. 쓰기 전에 Google 검색으로 핵심 사실(숫자·연도·인명·기록)을 확인한다.
-- '지금도 살아 있다', '현재 세계 최고/최대', '가장 최근', '아직 풀리지 않았다'처럼 시간이 지나면 바뀌는 사실은 오늘 기준으로 여전히 맞는지 검색으로 확인하고, 확인되지 않으면 그 주제는 쓰지 않는다. 가능하면 시간이 지나도 변하지 않는 사실을 고른다.
+- 오늘은 ${TODAY}이다. '지금도 살아 있다', '현재 세계 최고/최대', '가장 최근', '아직 풀리지 않았다'처럼 시간이 지나면 바뀌는 사실은 쓰지 않는다. 시간이 지나도 변하지 않는 사실을 고른다.
+- 위키백과 문서가 있는 주제를 고르고, 카드의 핵심 사실은 그 문서에 실제로 나오는 내용으로 쓴다. 쓴 뒤에 그 문서와 대조해서 틀리면 버려진다.
 - 학계나 신뢰할 수 있는 자료로 검증된 사실만 쓴다. 속설, 도시전설, 출처가 불분명한 통계는 쓰지 않는다. 확실하지 않으면 다른 주제를 고른다.
 - 숫자·연도·인명은 널리 확인되는 값만 쓰고, 제목·티저·퀴즈에 나오는 숫자는 본문과 똑같이 맞춘다.
-- 검색 결과에서 직접 확인한 내용만 쓴다. 검색으로 확인되지 않는 판결·통계·기록·인용은 쓰지 않는다.
+- 문서로 확인하기 어려운 판결·통계·기록·인용은 쓰지 않는다.
 - 모든 텍스트는 자연스러운 한국어로 쓰고 마크다운 기호나 출처 표기는 넣지 않는다.
 - 퀴즈는 본문을 읽으면 풀 수 있게 내고, "본문에 따르면" 같은 말로 시작하지 않는다. 보기는 4개, 정답은 하나.
 - deepDive는 왜 그런지(원리), 어떻게 알려졌는지(배경), 함께 알면 좋은 연결 지식을 한 문단씩 총 3문단. 각 문단 2~4문장, 문단 사이에 빈 줄 하나.
@@ -277,7 +278,7 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
   "hook": "읽고 싶게 만드는 한 문장 티저",
   "description": "본문 설명",
   "keyword": "위키백과에서 검색할 핵심 키워드 하나",
-  "wiki": "이 사실을 다루는 한국어 위키백과 문서의 정확한 제목. 없으면 'en:영어 위키백과 제목', 그것도 없으면 빈 문자열",
+  "wiki": "이 카드의 핵심 사실이 나오는 한국어 위키백과 문서의 정확한 제목. 한국어 문서가 없으면 'en:영어 위키백과 제목'",
   "quiz": { "question": "객관식 문제", "options": ["보기1", "보기2", "보기3", "보기4"], "answer": "정답 보기의 텍스트를 options와 똑같이", "explanation": "정답 해설 한두 문장" },
   "deepDive": "3문단 심화 설명",
   "followUps": [
@@ -298,8 +299,8 @@ const noThinking = new Set();
 const noSearch = new Set(); // 검색 도구와 JSON 응답을 함께 못 쓰는 모델
 let loggedResponseShape = false; // 첫 응답의 검색 정보·토큰 수를 한 번만 기록
 
-async function gemini(prompt) {
-  if (DRY) return { text: JSON.stringify(mockResponse()), grounded: true };
+async function gemini(prompt, { search = GROUNDING, mock = mockResponse } = {}) {
+  if (DRY) return { text: JSON.stringify(mock()), grounded: false };
   let quotaHits = 0;
   let lastError = '';
   let retriedUngrounded = false;
@@ -308,7 +309,7 @@ async function gemini(prompt) {
       const generationConfig = { responseMimeType: 'application/json' };
       if (!noThinking.has(model)) generationConfig.thinkingConfig = { thinkingLevel: THINKING_LEVEL };
       const body = { contents: [{ parts: [{ text: prompt }] }], generationConfig };
-      if (GROUNDING && !noSearch.has(model)) body.tools = [{ google_search: {} }];
+      if (search && !noSearch.has(model)) body.tools = [{ google_search: {} }];
       let res;
       try {
         res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -486,7 +487,67 @@ function wikiLink(lang, title) {
   return {
     title: `${lang === 'ko' ? '위키백과' : '영문 위키백과'} · ${title}`,
     url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title.replaceAll(' ', '_'))}`,
+    lang,
+    page: title,
   };
+}
+
+// 문서 본문(평문). 길면 앞부분 + 카드와 겹치는 낱말이 많은 문단을 골라 WIKI_TEXT_MAX 안으로 줄인다
+async function wikiText(link, card) {
+  const page = (await wikiApi(link.lang, { action: 'query', prop: 'extracts', explaintext: '1', titles: link.page, redirects: '1' }))
+    ?.query?.pages?.[0];
+  const text = String(page?.extract ?? '').trim();
+  if (text.length <= WIKI_TEXT_MAX) return text;
+  const words = new Set(
+    `${card.title} ${card.keyword} ${card.description} ${card.quiz?.options?.join(' ') ?? ''}`
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length >= 2),
+  );
+  const paras = text.split(/\n+/).map((t, i) => ({ t, i, score: [...words].filter((w) => t.includes(w)).length }));
+  const lead = text.slice(0, 2500);
+  let budget = WIKI_TEXT_MAX - lead.length;
+  const picked = [];
+  for (const p of [...paras].sort((a, b) => b.score - a.score)) {
+    if (!p.score || p.t.length > budget || lead.includes(p.t)) continue;
+    picked.push(p);
+    budget -= p.t.length;
+  }
+  return [lead, ...picked.sort((a, b) => a.i - b.i).map((p) => p.t)].join('\n');
+}
+
+const VERDICTS = { 맞음: 'ok', '일부 확인': 'partial', 틀림: 'wrong', '확인 불가': 'unknown' };
+
+// 카드가 문서로 뒷받침되는지 모델에게 판정받는다: ok | partial | wrong | unknown
+async function verifyAgainstWiki(card, link) {
+  if (DRY) return { verdict: 'ok', reason: 'DRY RUN' };
+  const text = await wikiText(link, card);
+  if (text.length < 200) return { verdict: 'unknown', reason: '문서 본문을 가져오지 못함' };
+  const quiz = card.quiz ? `${card.quiz.question} / 정답: ${card.quiz.options[card.quiz.answer]}` : '없음';
+  const prompt = `
+너는 사실 확인 담당자야. [문서]는 위키백과 '${link.page}' 문서의 내용이야. [카드]가 문서로 뒷받침되는지 판정해.
+판정 기준:
+- "맞음": 카드의 핵심 사실(제목, 본문의 주장, 퀴즈 정답)이 문서에 나오거나 문서 내용으로 바로 확인된다.
+- "일부 확인": 핵심 사실은 문서로 확인되지만, 문서에 없는 세부(숫자·연도·인명 등)가 있다. 문서와 어긋나는 내용은 없다.
+- "틀림": 문서와 다른 숫자·연도·인명·사실이 하나라도 있다 (심화 설명 포함).
+- "확인 불가": 문서가 카드 주제와 관련이 없거나 핵심 사실을 문서에서 찾을 수 없다.
+JSON 객체 하나로만 답해: {"verdict": "맞음 | 일부 확인 | 틀림 | 확인 불가", "reason": "판정 이유 한 문장"}
+
+[카드]
+제목: ${card.title}
+본문: ${card.description}
+퀴즈: ${quiz}
+심화 설명: ${card.deepDive}
+
+[문서]
+${text}`.trim();
+  try {
+    const { text: answer } = await gemini(prompt, { search: false, mock: () => ({ verdict: '맞음', reason: '' }) });
+    const raw = extractJson(answer);
+    return { verdict: VERDICTS[clean(raw.verdict)] ?? 'unknown', reason: clean(raw.reason).slice(0, 200) };
+  } catch (e) {
+    if (e instanceof QuotaError) throw e;
+    return { verdict: 'unknown', reason: `판정 실패: ${e.message.slice(0, 100)}` };
+  }
 }
 
 // 제목이 정확히 일치하는 문서가 있을 때만 (넘겨주기는 따라간다)
@@ -525,18 +586,32 @@ async function findSource(card) {
   return (await wikiSearch(card.keyword, card)) || (card.keyword !== card.title ? await wikiSearch(card.title, card) : null);
 }
 
-// 검색 확인(그라운딩)을 거쳤고 관련 출처가 있을 때만 '검색 확인' 표시
-async function withSource(card, grounded) {
+const checkStats = { ok: 0, partial: 0, wrong: 0, unknown: 0, noSource: 0 };
+
+// 위키백과 문서를 찾아 대조한다. '맞음'이면 확인 표시, '일부 확인'이면 표시 없이 쓰고, 나머지는 버린다(null)
+async function checkCard(card) {
   const { wiki, ...rest } = card;
-  const source = await findSource(card);
-  return { ...rest, sources: source ? [source] : [], verified: Boolean(grounded && source) };
+  const link = await findSource(card);
+  if (!link && !DRY) {
+    checkStats.noSource++;
+    console.log(`    ✗ 버림 (위키백과 문서 없음): ${card.title}`);
+    return null;
+  }
+  const { verdict, reason } = await verifyAgainstWiki(card, link ?? { lang: 'ko', page: card.title });
+  checkStats[verdict]++;
+  if (verdict === 'wrong' || verdict === 'unknown') {
+    console.log(`    ✗ 버림 (${verdict === 'wrong' ? '틀림' : '확인 불가'}): ${card.title} — ${reason}`);
+    return null;
+  }
+  const source = link ? { title: link.title, url: link.url } : null;
+  return { ...rest, sources: source ? [source] : [], verified: verdict === 'ok' };
 }
 
 // ───────────────────────── 카드 한 묶음(메인 + 꼬리 2장) 만들기 ─────────────────────────
 
 async function makeFamily(item, rootKey, avoidTitles, knownTitles) {
   for (let tries = 0; tries < 2; tries++) {
-    const { text, grounded } = await gemini(buildPrompt(item, avoidTitles));
+    const { text } = await gemini(buildPrompt(item, avoidTitles));
     const raw = extractJson(text);
     const root = cleanCard({ ...raw, category: item.category }, item.category);
     if (!root) continue;
@@ -545,18 +620,22 @@ async function makeFamily(item, rootKey, avoidTitles, knownTitles) {
       item = { ...item, angle: pick(ANGLES) };
       continue;
     }
+    const checkedRoot = await checkCard(root);
+    if (!checkedRoot) return null; // 메인 카드가 틀리면 꼬리 카드까지 통째로 버린다
     const children = [];
     for (const [i, f] of (Array.isArray(raw.followUps) ? raw.followUps : []).slice(0, 2).entries()) {
       const question = clean(f?.question).slice(0, 40);
       const child = cleanCard(f?.card, item.category);
       if (!question || !child || knownTitles.has(norm(child.title)) || norm(child.title) === norm(root.title)) continue;
+      const checkedChild = await checkCard(child);
+      if (!checkedChild) continue;
       children.push({
         key: `${rootKey}-f${i + 1}`,
         parentKey: rootKey,
         parentQuestion: question,
         difficulty: item.difficulty,
         level: item.level,
-        ...(await withSource(child, grounded)),
+        ...checkedChild,
         followUps: [],
       });
     }
@@ -566,7 +645,7 @@ async function makeFamily(item, rootKey, avoidTitles, knownTitles) {
       parentQuestion: '',
       difficulty: item.difficulty,
       level: item.level,
-      ...(await withSource(root, grounded)),
+      ...checkedRoot,
       followUps: children.map((c) => ({ question: c.parentQuestion, key: c.key })),
     };
     return [rootCard, ...children];
@@ -598,7 +677,7 @@ async function main() {
   // 목표는 꼬리 카드까지 합친 전체 장수. 메인 1장당 보통 3장(메인 + 꼬리 2)이 나오므로 메인은 약 1/3,
   // 꼬리 카드가 빠지는 경우를 대비해 계획은 넉넉히 세우고 목표에 닿으면 멈춘다
   const target = Number(process.env.COUNT) || (index.packs.length === 0 ? FIRST_COUNT : WEEKLY_COUNT);
-  const plan = makePlan(Math.ceil(target / 3) + Math.max(3, Math.ceil(target / 30)));
+  const plan = makePlan(Math.ceil(target / 3) * 2 + 3); // 대조에서 버려지는 카드가 있어 넉넉히 계획하고 목표에 닿으면 멈춘다
   const runId = stamp();
   const startedAt = Date.now();
 
@@ -609,7 +688,7 @@ async function main() {
     titlesByCategory.get(c.category).push(c.title);
   }
 
-  console.log(`기존 카드 ${existing.length}장 · 이번에 카드 ${target}장(메인 약 ${Math.ceil(target / 3)}장) 생성 시작 (${DRY ? 'DRY RUN' : MODELS.join(', ')}${GROUNDING ? ' + 검색 확인' : ''}, 기준일 ${TODAY})`);
+  console.log(`기존 카드 ${existing.length}장 · 이번에 카드 ${target}장(메인 약 ${Math.ceil(target / 3)}장) 생성 시작 (${DRY ? 'DRY RUN' : MODELS.join(', ')}${GROUNDING ? ' + 검색 확인' : ''} + 위키백과 대조, 기준일 ${TODAY})`);
 
   let buffer = [];
   let bufferRoots = 0;
@@ -617,6 +696,7 @@ async function main() {
   let made = 0; // 메인 카드 수
   let madeCards = 0; // 꼬리 카드 포함 전체 장수
   let failures = 0;
+  let rejected = 0; // 대조에서 버려진 메인 카드 수
   let stopReason = '';
 
   async function flush() {
@@ -660,8 +740,8 @@ async function main() {
         }
         console.log(`[${madeCards}/${target}] ${item.category} · ${item.difficulty} Lv.${item.level} · ${family[0].title} (+꼬리 ${family.length - 1})`);
       } else {
-        failures++;
-        console.warn(`[skip] ${item.category}: 쓸 만한 카드를 받지 못함`);
+        rejected++;
+        console.warn(`[skip] ${item.category}: 쓸 만한(대조를 통과한) 카드를 받지 못함`);
       }
     } catch (e) {
       if (e instanceof QuotaError) {
@@ -680,8 +760,9 @@ async function main() {
   }
   await flush();
 
-  const spent = DRY ? '' : ` · 검색 확인 응답 ${usage.run.grounded}/${usage.run.calls} · 이번 예상 지출 ${won(usage.run.krw)} (누적 ${won(usage.data.spentKRW)} / ${won(usage.data.budgetKRW)})`;
-  const summary = `카드 ${madeCards}/${target}장(메인 ${made}장) 생성, 실패 ${failures}회${stopReason ? ` · 중단: ${stopReason}` : ''} · 누적 ${index.totalCards}장${spent}`;
+  const checks = ` · 대조: 맞음 ${checkStats.ok}, 일부 확인 ${checkStats.partial}, 틀림 ${checkStats.wrong}, 확인 불가 ${checkStats.unknown}, 문서 없음 ${checkStats.noSource} (메인 버림 ${rejected})`;
+  const spent = DRY ? '' : ` · 이번 예상 지출 ${won(usage.run.krw)} (누적 ${won(usage.data.spentKRW)} / ${won(usage.data.budgetKRW)})`;
+  const summary = `카드 ${madeCards}/${target}장(메인 ${made}장) 생성, 실패 ${failures}회${stopReason ? ` · 중단: ${stopReason}` : ''} · 누적 ${index.totalCards}장${checks}${spent}`;
   console.log(summary);
   await saveUsage(summary);
   if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, `### 카드 생성 결과\n${summary}\n`);
