@@ -6,7 +6,7 @@
 //
 // 환경 변수
 //   GEMINI_API_KEY  (필수, DRY_RUN=1 이면 없어도 됨)
-//   COUNT           만들 메인 카드 수 (기본: 첫 실행 300, 이후 150)
+//   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 300, 이후 150 — 메인 카드는 약 1/3)
 //   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.5-flash,gemini-flash-latest)
 //   THINKING_LEVEL  minimal | low | medium | high (기본 medium)
 //   DELAY_MS        요청 사이 간격 (기본 4000)
@@ -28,7 +28,7 @@ const MODELS = (process.env.MODELS || 'gemini-3.5-flash,gemini-flash-latest').sp
 const THINKING_LEVEL = process.env.THINKING_LEVEL || 'medium';
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
-const PACK_ROOTS = 50; // 묶음 하나에 메인 카드 50장 (꼬리 카드 포함 약 150장)
+const PACK_CARDS = 150; // 묶음 하나에 카드 약 150장 (메인 약 50장 + 꼬리 카드)
 const DEEP_RATIO = 0.4; // 메인 카드 중 심화 지식 비율
 const MAX_FAILURES = 25;
 
@@ -374,8 +374,10 @@ async function main() {
   }
   await fs.mkdir(PACKS_DIR, { recursive: true });
   const { index, cards: existing } = await loadExisting();
-  const count = Number(process.env.COUNT) || (index.packs.length === 0 ? 300 : 150);
-  const plan = makePlan(count);
+  // 목표는 꼬리 카드까지 합친 전체 장수. 메인 1장당 보통 3장(메인 + 꼬리 2)이 나오므로 메인은 약 1/3,
+  // 꼬리 카드가 빠지는 경우를 대비해 계획은 넉넉히 세우고 목표에 닿으면 멈춘다
+  const target = Number(process.env.COUNT) || (index.packs.length === 0 ? 300 : 150);
+  const plan = makePlan(Math.ceil(target / 3) + Math.max(3, Math.ceil(target / 30)));
   const runId = stamp();
   const startedAt = Date.now();
 
@@ -386,12 +388,13 @@ async function main() {
     titlesByCategory.get(c.category).push(c.title);
   }
 
-  console.log(`기존 카드 ${existing.length}장 · 이번에 메인 카드 ${count}장 생성 시작 (${DRY ? 'DRY RUN' : MODELS.join(', ')})`);
+  console.log(`기존 카드 ${existing.length}장 · 이번에 카드 ${target}장(메인 약 ${Math.ceil(target / 3)}장) 생성 시작 (${DRY ? 'DRY RUN' : MODELS.join(', ')})`);
 
   let buffer = [];
   let bufferRoots = 0;
   let packNo = 0;
-  let made = 0;
+  let made = 0; // 메인 카드 수
+  let madeCards = 0; // 꼬리 카드 포함 전체 장수
   let failures = 0;
   let stopReason = '';
 
@@ -411,6 +414,7 @@ async function main() {
   }
 
   for (const [n, item] of plan.entries()) {
+    if (madeCards >= target) break;
     if (Date.now() - startedAt > MAX_MINUTES * 60_000) {
       stopReason = `시간 제한 ${MAX_MINUTES}분`;
       break;
@@ -423,12 +427,13 @@ async function main() {
         buffer.push(...family);
         bufferRoots++;
         made++;
+        madeCards += family.length;
         for (const c of family) {
           knownTitles.add(norm(c.title));
           if (!titlesByCategory.has(c.category)) titlesByCategory.set(c.category, []);
           titlesByCategory.get(c.category).push(c.title);
         }
-        console.log(`[${made}/${count}] ${item.category} · ${item.difficulty} Lv.${item.level} · ${family[0].title} (+꼬리 ${family.length - 1})`);
+        console.log(`[${madeCards}/${target}] ${item.category} · ${item.difficulty} Lv.${item.level} · ${family[0].title} (+꼬리 ${family.length - 1})`);
       } else {
         failures++;
         console.warn(`[skip] ${item.category}: 쓸 만한 카드를 받지 못함`);
@@ -445,12 +450,12 @@ async function main() {
       stopReason = `실패 ${failures}회`;
       break;
     }
-    if (bufferRoots >= PACK_ROOTS) await flush();
+    if (buffer.length >= PACK_CARDS) await flush();
     if (DELAY_MS) await sleep(DELAY_MS);
   }
   await flush();
 
-  const summary = `메인 카드 ${made}/${count}장 생성, 실패 ${failures}회${stopReason ? ` · 중단: ${stopReason}` : ''} · 누적 ${index.totalCards}장`;
+  const summary = `카드 ${madeCards}/${target}장(메인 ${made}장) 생성, 실패 ${failures}회${stopReason ? ` · 중단: ${stopReason}` : ''} · 누적 ${index.totalCards}장`;
   console.log(summary);
   if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, `### 카드 생성 결과\n${summary}\n`);
   if (made === 0 && !DRY) process.exit(1);
@@ -459,11 +464,12 @@ async function main() {
 // ───────────────────────── DRY RUN 용 가짜 응답 ─────────────────────────
 
 let mockSeq = 0;
+const MOCK_TAG = Math.random().toString(36).slice(2, 6); // 실행마다 다른 제목 (중복 검사에 걸리지 않게)
 function mockResponse() {
   const n = ++mockSeq;
   const card = (t) => ({
     category: pick(CATEGORIES),
-    title: `${t} 테스트 카드 ${n}`,
+    title: `${t} 테스트 카드 ${MOCK_TAG}-${n}`,
     hook: '테스트 티저 문장',
     description: '테스트용 본문입니다. 실제 생성 없이 흐름만 확인하려고 만든 문장이며 길이 검사를 통과하도록 충분히 깁니다.',
     keyword: `키워드${n}`,
