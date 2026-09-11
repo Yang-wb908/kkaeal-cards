@@ -6,9 +6,9 @@
 //
 // 환경 변수
 //   GEMINI_API_KEY  (필수, DRY_RUN=1 이면 없어도 됨)
-//   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 300, 이후 150 — 메인 카드는 약 1/3)
-//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.5-flash,gemini-flash-latest)
-//   THINKING_LEVEL  minimal | low | medium | high (기본 medium)
+//   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 180, 이후 90 — 메인 카드는 약 1/3)
+//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.1-flash-lite,gemini-3.5-flash-lite — 비용이 적은 모델)
+//   THINKING_LEVEL  minimal | low | medium | high (기본 low)
 //   DELAY_MS        요청 사이 간격 (기본 4000)
 //   MAX_MINUTES     이 시간이 지나면 만든 데까지 저장하고 끝낸다 (기본 240)
 //   GROUNDING=0     Google 검색 그라운딩 끄기 (기본 켜짐: 오늘 기준으로 사실을 검색해 확인)
@@ -25,12 +25,14 @@ const INDEX_FILE = path.join(CARDS_DIR, 'index.json');
 
 const DRY = process.env.DRY_RUN === '1';
 const KEY = process.env.GEMINI_API_KEY || '';
-const MODELS = (process.env.MODELS || 'gemini-3.5-flash,gemini-flash-latest').split(',').map((s) => s.trim()).filter(Boolean);
-const THINKING_LEVEL = process.env.THINKING_LEVEL || 'medium';
+const MODELS = (process.env.MODELS || 'gemini-3.1-flash-lite,gemini-3.5-flash-lite').split(',').map((s) => s.trim()).filter(Boolean);
+const THINKING_LEVEL = process.env.THINKING_LEVEL || 'low';
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
 const GROUNDING = process.env.GROUNDING !== '0';
 const TODAY = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); // YYYY-MM-DD (한국 시간)
+const FIRST_COUNT = 180; // 첫 실행 카드 수
+const WEEKLY_COUNT = 90; // 매주 카드 수 (메인 약 30장) — 월 지출 한도 ₩5,000 안에 맞춘 양
 const PACK_CARDS = 150; // 묶음 하나에 카드 약 150장 (메인 약 50장 + 꼬리 카드)
 const DEEP_RATIO = 0.4; // 메인 카드 중 심화 지식 비율
 const MAX_FAILURES = 25;
@@ -464,7 +466,7 @@ async function main() {
   const { index, cards: existing } = await loadExisting();
   // 목표는 꼬리 카드까지 합친 전체 장수. 메인 1장당 보통 3장(메인 + 꼬리 2)이 나오므로 메인은 약 1/3,
   // 꼬리 카드가 빠지는 경우를 대비해 계획은 넉넉히 세우고 목표에 닿으면 멈춘다
-  const target = Number(process.env.COUNT) || (index.packs.length === 0 ? 300 : 150);
+  const target = Number(process.env.COUNT) || (index.packs.length === 0 ? FIRST_COUNT : WEEKLY_COUNT);
   const plan = makePlan(Math.ceil(target / 3) + Math.max(3, Math.ceil(target / 30)));
   const runId = stamp();
   const startedAt = Date.now();
