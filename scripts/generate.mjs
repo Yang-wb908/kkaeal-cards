@@ -155,6 +155,7 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
 - '지금도 살아 있다', '현재 세계 최고/최대', '가장 최근', '아직 풀리지 않았다'처럼 시간이 지나면 바뀌는 사실은 오늘 기준으로 여전히 맞는지 검색으로 확인하고, 확인되지 않으면 그 주제는 쓰지 않는다. 가능하면 시간이 지나도 변하지 않는 사실을 고른다.
 - 학계나 신뢰할 수 있는 자료로 검증된 사실만 쓴다. 속설, 도시전설, 출처가 불분명한 통계는 쓰지 않는다. 확실하지 않으면 다른 주제를 고른다.
 - 숫자·연도·인명은 널리 확인되는 값만 쓴다.
+- 검색 결과에서 직접 확인한 내용만 쓴다. 검색으로 확인되지 않는 판결·통계·기록·인용은 쓰지 않는다.
 - 모든 텍스트는 자연스러운 한국어로 쓰고 마크다운 기호나 출처 표기는 넣지 않는다.
 - 퀴즈는 본문을 읽으면 풀 수 있게 내고, "본문에 따르면" 같은 말로 시작하지 않는다. 보기는 4개, 정답은 하나.
 - deepDive는 왜 그런지(원리), 어떻게 알려졌는지(배경), 함께 알면 좋은 연결 지식을 한 문단씩 총 3문단. 각 문단 2~4문장, 문단 사이에 빈 줄 하나.
@@ -167,12 +168,13 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
   "hook": "읽고 싶게 만드는 한 문장 티저",
   "description": "본문 설명",
   "keyword": "위키백과에서 검색할 핵심 키워드 하나",
+  "wiki": "이 사실을 다루는 한국어 위키백과 문서의 정확한 제목. 없으면 'en:영어 위키백과 제목', 그것도 없으면 빈 문자열",
   "quiz": { "question": "객관식 문제", "options": ["보기1", "보기2", "보기3", "보기4"], "answer": "정답 보기의 텍스트를 options와 똑같이", "explanation": "정답 해설 한두 문장" },
   "deepDive": "3문단 심화 설명",
   "followUps": [
     {
       "question": "이어서 궁금해질 짧은 질문 (20자 이내)",
-      "card": { "category": "분야", "title": "...", "hook": "...", "description": "...", "keyword": "...",
+      "card": { "category": "분야", "title": "...", "hook": "...", "description": "...", "keyword": "...", "wiki": "...",
                 "quiz": { "question": "...", "options": ["...", "...", "...", "..."], "answer": "...", "explanation": "..." },
                 "deepDive": "..." }
     },
@@ -187,7 +189,7 @@ const noThinking = new Set();
 const noSearch = new Set(); // 검색 도구와 JSON 응답을 함께 못 쓰는 모델
 
 async function gemini(prompt) {
-  if (DRY) return JSON.stringify(mockResponse());
+  if (DRY) return { text: JSON.stringify(mockResponse()), grounded: true };
   let quotaHits = 0;
   let lastError = '';
   for (const model of MODELS) {
@@ -211,8 +213,11 @@ async function gemini(prompt) {
       }
       if (res.ok) {
         const data = await res.json();
-        const text = (data.candidates?.[0]?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? '').join('');
-        if (text.trim()) return text;
+        const cand = data.candidates?.[0];
+        const text = (cand?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? '').join('');
+        const gm = cand?.groundingMetadata;
+        const grounded = Boolean(gm?.webSearchQueries?.length || gm?.groundingChunks?.length);
+        if (text.trim()) return { text, grounded };
         lastError = `${model} empty response`;
         continue;
       }
@@ -330,6 +335,7 @@ function cleanCard(raw, fallbackCategory) {
     hook: clean(raw.hook),
     description,
     keyword: clean(raw.keyword) || title,
+    wiki: clean(raw.wiki).slice(0, 120),
     quiz: cleanQuiz(raw.quiz),
     deepDive: clean(raw.deepDive),
   };
@@ -337,35 +343,75 @@ function cleanCard(raw, fallbackCategory) {
 
 // ───────────────────────── 위키백과 출처 ─────────────────────────
 
-async function wikiSource(query) {
-  if (DRY || !query) return null;
-  const url = new URL('https://ko.wikipedia.org/w/api.php');
-  Object.entries({ action: 'query', list: 'search', srsearch: query, srlimit: '1', format: 'json', formatversion: '2' })
-    .forEach(([k, v]) => url.searchParams.set(k, v));
+const WIKI_HEADERS = { 'user-agent': 'KkaealCards/1.0 (https://github.com/Yang-wb908/kkaeal-cards; educational)' };
+
+async function wikiApi(lang, params) {
+  const url = new URL(`https://${lang}.wikipedia.org/w/api.php`);
+  Object.entries({ ...params, format: 'json', formatversion: '2' }).forEach(([k, v]) => url.searchParams.set(k, v));
   try {
-    const res = await fetch(url, {
-      headers: { 'user-agent': 'KkaealCards/1.0 (https://github.com/Yang-wb908/kkaeal-cards; educational)' },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return null;
-    const title = (await res.json())?.query?.search?.[0]?.title?.trim();
-    if (!title) return null;
-    return { title: `위키백과 · ${title}`, url: `https://ko.wikipedia.org/wiki/${encodeURIComponent(title.replaceAll(' ', '_'))}` };
+    const res = await fetch(url, { headers: WIKI_HEADERS, signal: AbortSignal.timeout(15_000) });
+    return res.ok ? await res.json() : null;
   } catch {
     return null;
   }
 }
 
-async function withSource(card) {
-  const source = (await wikiSource(card.keyword)) || (card.keyword !== card.title ? await wikiSource(card.title) : null);
-  return { ...card, sources: source ? [source] : [], verified: Boolean(source) };
+function wikiLink(lang, title) {
+  return {
+    title: `${lang === 'ko' ? '위키백과' : '영문 위키백과'} · ${title}`,
+    url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title.replaceAll(' ', '_'))}`,
+  };
+}
+
+// 제목이 정확히 일치하는 문서가 있을 때만 (넘겨주기는 따라간다)
+async function wikiExact(lang, title) {
+  if (!title) return null;
+  const page = (await wikiApi(lang, { action: 'query', titles: title, redirects: '1' }))?.query?.pages?.[0];
+  return page && !page.missing && !page.invalid && page.title ? wikiLink(lang, page.title) : null;
+}
+
+// 검색 결과는 문서 제목이 카드에 실제로 나올 때만 쓴다 (엉뚱한 문서가 출처로 붙지 않게).
+// 제목·키워드에 나오면 받아들이고, 본문에만 나오면 검색 1순위일 때만 받아들인다
+async function wikiSearch(query, card) {
+  if (!query) return null;
+  const hits = (await wikiApi('ko', { action: 'query', list: 'search', srsearch: query, srlimit: '3' }))?.query?.search ?? [];
+  const head = norm(`${card.title} ${card.keyword}`);
+  const body = norm(`${card.description} ${card.deepDive}`);
+  for (const [rank, hit] of hits.entries()) {
+    const t = norm(String(hit.title ?? '').replace(/\s*\([^)]*\)\s*$/, ''));
+    if (t.length < 2) continue;
+    if (head.includes(t) || (rank === 0 && body.includes(t))) return wikiLink('ko', hit.title.trim());
+  }
+  return null;
+}
+
+async function findSource(card) {
+  if (DRY) return null;
+  const wiki = card.wiki ?? '';
+  const en = wiki.match(/^en\s*:\s*(.+)$/i);
+  if (en) {
+    const hit = await wikiExact('en', en[1].trim());
+    if (hit) return hit;
+  } else if (wiki) {
+    const hit = await wikiExact('ko', wiki);
+    if (hit) return hit;
+  }
+  return (await wikiSearch(card.keyword, card)) || (card.keyword !== card.title ? await wikiSearch(card.title, card) : null);
+}
+
+// 검색 확인(그라운딩)을 거쳤고 관련 출처가 있을 때만 '검색 확인' 표시
+async function withSource(card, grounded) {
+  const { wiki, ...rest } = card;
+  const source = await findSource(card);
+  return { ...rest, sources: source ? [source] : [], verified: Boolean(grounded && source) };
 }
 
 // ───────────────────────── 카드 한 묶음(메인 + 꼬리 2장) 만들기 ─────────────────────────
 
 async function makeFamily(item, rootKey, avoidTitles, knownTitles) {
   for (let tries = 0; tries < 2; tries++) {
-    const raw = extractJson(await gemini(buildPrompt(item, avoidTitles)));
+    const { text, grounded } = await gemini(buildPrompt(item, avoidTitles));
+    const raw = extractJson(text);
     const root = cleanCard({ ...raw, category: item.category }, item.category);
     if (!root) continue;
     if (knownTitles.has(norm(root.title))) {
@@ -384,7 +430,7 @@ async function makeFamily(item, rootKey, avoidTitles, knownTitles) {
         parentQuestion: question,
         difficulty: item.difficulty,
         level: item.level,
-        ...(await withSource(child)),
+        ...(await withSource(child, grounded)),
         followUps: [],
       });
     }
@@ -394,7 +440,7 @@ async function makeFamily(item, rootKey, avoidTitles, knownTitles) {
       parentQuestion: '',
       difficulty: item.difficulty,
       level: item.level,
-      ...(await withSource(root)),
+      ...(await withSource(root, grounded)),
       followUps: children.map((c) => ({ question: c.parentQuestion, key: c.key })),
     };
     return [rootCard, ...children];
