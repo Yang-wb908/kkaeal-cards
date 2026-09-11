@@ -621,7 +621,8 @@ async function findSources(card) {
 const checkStats = { ok: 0, partial: 0, wrong: 0, unknown: 0, noSource: 0 };
 
 // 위키백과 문서를 찾아 대조한다. '맞음'이면 확인 표시, '일부 확인'이면 표시 없이 쓰고, 나머지는 버린다(null)
-async function checkCard(card) {
+// strict(메인 카드): '맞음'만 통과. 꼬리 카드는 '일부 확인'도 확인 표시 없이 통과
+async function checkCard(card, { strict = false } = {}) {
   const { wiki, wikiEn, ...rest } = card;
   const links = DRY ? [{ lang: 'ko', page: card.title, title: '', url: '' }] : await findSources(card);
   if (!links.length) {
@@ -634,14 +635,15 @@ async function checkCard(card) {
   for (const link of links) {
     last = await verifyAgainstWiki(card, link);
     if (last.verdict === 'wrong') break;
-    if (last.verdict === 'ok' || last.verdict === 'partial') {
+    if (last.verdict === 'ok' || (last.verdict === 'partial' && !strict)) {
       checkStats[last.verdict]++;
       const sources = [link, ...links.filter((l) => l !== link)].filter((l) => l.url).map((l) => ({ title: l.title, url: l.url }));
       return { ...rest, sources, verified: last.verdict === 'ok' };
     }
   }
   checkStats[last.verdict]++;
-  console.log(`    ✗ 버림 (${last.verdict === 'wrong' ? '틀림' : '확인 불가'}): ${card.title} — ${last.reason}`);
+  const why = { wrong: '틀림', partial: '메인 카드인데 일부만 확인', unknown: '확인 불가' }[last.verdict];
+  console.log(`    ✗ 버림 (${why}): ${card.title} — ${last.reason}`);
   return null;
 }
 
@@ -658,7 +660,7 @@ async function makeFamily(item, rootKey, avoidTitles, knownTitles) {
       item = { ...item, angle: pick(ANGLES) };
       continue;
     }
-    const checkedRoot = await checkCard(root);
+    const checkedRoot = await checkCard(root, { strict: true });
     if (!checkedRoot) return null; // 메인 카드가 틀리면 꼬리 카드까지 통째로 버린다
     const children = [];
     for (const [i, f] of (Array.isArray(raw.followUps) ? raw.followUps : []).slice(0, 2).entries()) {
