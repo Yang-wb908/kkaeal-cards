@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: generate-cards
@@ -41,10 +42,20 @@ jobs:
         run: |
           git config user.name "kkaeal-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add cards
+          git add cards usage.json 2>/dev/null || git add cards
           if git diff --cached --quiet; then
             echo "새 카드 없음"
           else
             git commit -m "cards: $(date -u +%Y-%m-%d) 카드 묶음 추가"
             git push
+          fi
+
+      # 예상 지출이 예산의 80%·100%에 닿으면 이슈로 알림 (@멘션 → GitHub 알림·메일)
+      - name: 지출 알림
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f budget-alert.md ]; then
+            gh issue create --title "$(head -n 1 budget-alert.md)" --body "$(tail -n +3 budget-alert.md)"
           fi
