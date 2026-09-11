@@ -11,6 +11,7 @@
 //   THINKING_LEVEL  minimal | low | medium | high (기본 medium)
 //   DELAY_MS        요청 사이 간격 (기본 4000)
 //   MAX_MINUTES     이 시간이 지나면 만든 데까지 저장하고 끝낸다 (기본 240)
+//   GROUNDING=0     Google 검색 그라운딩 끄기 (기본 켜짐: 오늘 기준으로 사실을 검색해 확인)
 //   DRY_RUN=1       API 없이 가짜 카드로 흐름만 확인
 
 import fs from 'node:fs/promises';
@@ -28,6 +29,8 @@ const MODELS = (process.env.MODELS || 'gemini-3.5-flash,gemini-flash-latest').sp
 const THINKING_LEVEL = process.env.THINKING_LEVEL || 'medium';
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
+const GROUNDING = process.env.GROUNDING !== '0';
+const TODAY = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); // YYYY-MM-DD (한국 시간)
 const PACK_CARDS = 150; // 묶음 하나에 카드 약 150장 (메인 약 50장 + 꼬리 카드)
 const DEEP_RATIO = 0.4; // 메인 카드 중 심화 지식 비율
 const MAX_FAILURES = 25;
@@ -148,6 +151,8 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
 - 다음 주제와 겹치지 않게 한다: ${avoid}
 
 [공통 규칙]
+- 오늘은 ${TODAY}이다. 쓰기 전에 Google 검색으로 핵심 사실(숫자·연도·인명·기록)을 확인한다.
+- '지금도 살아 있다', '현재 세계 최고/최대', '가장 최근', '아직 풀리지 않았다'처럼 시간이 지나면 바뀌는 사실은 오늘 기준으로 여전히 맞는지 검색으로 확인하고, 확인되지 않으면 그 주제는 쓰지 않는다. 가능하면 시간이 지나도 변하지 않는 사실을 고른다.
 - 학계나 신뢰할 수 있는 자료로 검증된 사실만 쓴다. 속설, 도시전설, 출처가 불분명한 통계는 쓰지 않는다. 확실하지 않으면 다른 주제를 고른다.
 - 숫자·연도·인명은 널리 확인되는 값만 쓴다.
 - 모든 텍스트는 자연스러운 한국어로 쓰고 마크다운 기호나 출처 표기는 넣지 않는다.
@@ -179,6 +184,7 @@ function buildPrompt({ category, difficulty, level, angle }, avoidTitles) {
 // ───────────────────────── Gemini 호출 ─────────────────────────
 
 const noThinking = new Set();
+const noSearch = new Set(); // 검색 도구와 JSON 응답을 함께 못 쓰는 모델
 
 async function gemini(prompt) {
   if (DRY) return JSON.stringify(mockResponse());
@@ -188,12 +194,14 @@ async function gemini(prompt) {
     for (let attempt = 0; attempt < 3; attempt++) {
       const generationConfig = { responseMimeType: 'application/json' };
       if (!noThinking.has(model)) generationConfig.thinkingConfig = { thinkingLevel: THINKING_LEVEL };
+      const body = { contents: [{ parts: [{ text: prompt }] }], generationConfig };
+      if (GROUNDING && !noSearch.has(model)) body.tools = [{ google_search: {} }];
       let res;
       try {
         res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig }),
+          body: JSON.stringify(body),
           signal: AbortSignal.timeout(180_000),
         });
       } catch (e) {
@@ -203,15 +211,21 @@ async function gemini(prompt) {
       }
       if (res.ok) {
         const data = await res.json();
-        const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? '').join('');
+        const text = (data.candidates?.[0]?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? '').join('');
         if (text.trim()) return text;
         lastError = `${model} empty response`;
         continue;
       }
-      const body = await res.text();
-      lastError = `${model} ${res.status} ${body.slice(0, 200)}`;
-      if (res.status === 400 && /thinking/i.test(body) && !noThinking.has(model)) {
+      const errBody = await res.text();
+      lastError = `${model} ${res.status} ${errBody.slice(0, 200)}`;
+      if (res.status === 400 && /thinking/i.test(errBody) && !noThinking.has(model)) {
         noThinking.add(model); // 생각 수준 설정을 모르는 모델: 빼고 다시
+        attempt--;
+        continue;
+      }
+      if (res.status === 400 && body.tools && /tool|search|mime|json/i.test(errBody)) {
+        noSearch.add(model); // 검색 + JSON 응답 조합을 못 쓰는 모델: 검색 없이 다시
+        console.warn(`  (${model}: 검색 그라운딩 없이 계속 — ${errBody.slice(0, 120)})`);
         attempt--;
         continue;
       }
@@ -234,10 +248,38 @@ async function gemini(prompt) {
 
 // ───────────────────────── 응답 정리·검증 ─────────────────────────
 
+// 응답에서 JSON 객체 하나를 꺼낸다. 앞뒤에 코드 블록 표시나 설명, 두 번째 객체가 붙어 와도
+// 첫 번째 객체의 괄호 짝이 맞는 곳까지만 잘라 읽는다
 function extractJson(raw) {
-  const start = raw.search(/\{\s*"/);
-  const end = raw.lastIndexOf('}');
-  return JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw);
+  const text = String(raw).trim();
+  try {
+    return JSON.parse(text);
+  } catch {}
+  let start = text.search(/\{\s*"/);
+  while (start >= 0) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+      } else if (ch === '"') inString = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, i + 1));
+        } catch {
+          break;
+        }
+      }
+    }
+    const next = text.slice(start + 1).search(/\{\s*"/);
+    start = next >= 0 ? start + 1 + next : -1;
+  }
+  throw new Error(`JSON을 찾지 못함: ${text.slice(0, 80)}`);
 }
 
 // 정답 매칭: 정확 → 정규화 일치 → 기호(A~D, N번) → 유일한 포함 관계. 애매하면 퀴즈를 뺀다
@@ -388,7 +430,7 @@ async function main() {
     titlesByCategory.get(c.category).push(c.title);
   }
 
-  console.log(`기존 카드 ${existing.length}장 · 이번에 카드 ${target}장(메인 약 ${Math.ceil(target / 3)}장) 생성 시작 (${DRY ? 'DRY RUN' : MODELS.join(', ')})`);
+  console.log(`기존 카드 ${existing.length}장 · 이번에 카드 ${target}장(메인 약 ${Math.ceil(target / 3)}장) 생성 시작 (${DRY ? 'DRY RUN' : MODELS.join(', ')}${GROUNDING ? ' + 검색 확인' : ''}, 기준일 ${TODAY})`);
 
   let buffer = [];
   let bufferRoots = 0;
