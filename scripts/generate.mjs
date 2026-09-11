@@ -18,6 +18,7 @@
 //   USD_KRW         달러→원 환율 (기본 1400)
 
 import fs from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -103,6 +104,8 @@ function recordCall(model, meta, queries) {
     searchQueries: usage.run.searchQueries + queries,
     krw: usage.run.krw + krw,
   });
+  // 매 요청마다 바로 저장 → 실행이 취소되거나 시간 초과로 끊겨도 쓴 만큼은 남는다
+  writeFileSync(USAGE_FILE, JSON.stringify(usage.data, null, 1) + '\n');
   const ratio = usage.data.spentKRW / usage.data.budgetKRW;
   for (const level of ALERT_LEVELS) {
     if (ratio >= level && !usage.data.alerted.includes(level)) {
