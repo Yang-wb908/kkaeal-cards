@@ -515,22 +515,22 @@ async function wikiText(link, card) {
   return [lead, ...picked.sort((a, b) => a.i - b.i).map((p) => p.t)].join('\n');
 }
 
-const VERDICTS = { 맞음: 'ok', '일부 확인': 'partial', 틀림: 'wrong', '확인 불가': 'unknown' };
-
-// 카드가 문서로 뒷받침되는지 모델에게 판정받는다: ok | partial | wrong | unknown
+// 카드가 문서로 뒷받침되는지 판정한다: ok | partial | wrong | unknown
+// 모델에게 핵심 주장마다 문서 원문을 그대로 인용하게 하고, 그 인용이 실제로 문서에 있는지 코드로 다시 확인한다
+// (모델이 대충 '맞음'이라고 해도 근거 문장이 문서에 없으면 인정하지 않는다)
 async function verifyAgainstWiki(card, link) {
   if (DRY) return { verdict: 'ok', reason: 'DRY RUN' };
   const text = await wikiText(link, card);
   if (text.length < 200) return { verdict: 'unknown', reason: '문서 본문을 가져오지 못함' };
   const quiz = card.quiz ? `${card.quiz.question} / 정답: ${card.quiz.options[card.quiz.answer]}` : '없음';
   const prompt = `
-너는 사실 확인 담당자야. [문서]는 위키백과 '${link.page}' 문서의 내용이야. [카드]가 문서로 뒷받침되는지 판정해.
-판정 기준:
-- "맞음": 카드의 핵심 사실(제목, 본문의 주장, 퀴즈 정답)이 문서에 나오거나 문서 내용으로 바로 확인된다.
-- "일부 확인": 핵심 사실은 문서로 확인되지만, 문서에 없는 세부(숫자·연도·인명 등)가 있다. 문서와 어긋나는 내용은 없다.
-- "틀림": 문서와 다른 숫자·연도·인명·사실이 하나라도 있다 (심화 설명 포함).
-- "확인 불가": 문서가 카드 주제와 관련이 없거나 핵심 사실을 문서에서 찾을 수 없다.
-JSON 객체 하나로만 답해: {"verdict": "맞음 | 일부 확인 | 틀림 | 확인 불가", "reason": "판정 이유 한 문장"}
+너는 꼼꼼한 사실 확인 담당자야. [문서]는 위키백과 '${link.page}' 문서 내용이야.
+[카드]에서 핵심 주장 2~4개를 뽑아, 각각 [문서]로 뒷받침되는지 판정해.
+- 첫 번째 주장은 반드시 카드 제목이 말하는 가장 핵심적인 사실로 한다. 숫자·연도·인명이 있으면 그대로 포함한다.
+- status: 문서에 같은 내용이 있으면 "supported", 문서 내용과 어긋나면 "contradicted", 문서에서 찾을 수 없으면 "missing".
+- quote: supported나 contradicted일 때 근거가 되는 [문서]의 문장을 한 글자도 바꾸지 말고 그대로 복사한다 (40~200자). missing이면 빈 문자열.
+- 문서에 없는 내용을 추측으로 supported라고 하지 않는다. 비슷하지만 숫자나 대상이 다르면 contradicted 또는 missing이다.
+JSON 객체 하나로만 답해: {"claims": [{"claim": "주장", "status": "supported | contradicted | missing", "quote": "문서 원문"}]}
 
 [카드]
 제목: ${card.title}
@@ -540,14 +540,33 @@ JSON 객체 하나로만 답해: {"verdict": "맞음 | 일부 확인 | 틀림 | 
 
 [문서]
 ${text}`.trim();
+  let claims;
   try {
-    const { text: answer } = await gemini(prompt, { search: false, mock: () => ({ verdict: '맞음', reason: '' }) });
-    const raw = extractJson(answer);
-    return { verdict: VERDICTS[clean(raw.verdict)] ?? 'unknown', reason: clean(raw.reason).slice(0, 200) };
+    const { text: answer } = await gemini(prompt, { search: false, mock: () => ({ claims: [] }) });
+    claims = extractJson(answer).claims;
   } catch (e) {
     if (e instanceof QuotaError) throw e;
     return { verdict: 'unknown', reason: `판정 실패: ${e.message.slice(0, 100)}` };
   }
+  if (!Array.isArray(claims) || !claims.length) return { verdict: 'unknown', reason: '판정 결과 없음' };
+  const doc = norm(text);
+  const found = (q) => {
+    const n = norm(q);
+    return n.length >= 10 && doc.includes(n);
+  };
+  const results = claims.slice(0, 4).map((c) => {
+    const status = clean(c?.status);
+    const quoted = found(c?.quote);
+    // 인용이 문서에 없으면 모델의 판정을 믿지 않는다
+    if (status === 'supported' && quoted) return 'supported';
+    if (status === 'contradicted' && quoted) return 'contradicted';
+    return 'missing';
+  });
+  const summary = claims.slice(0, 4).map((c, i) => `${results[i]}: ${clean(c?.claim).slice(0, 60)}`).join(' / ');
+  if (results.includes('contradicted')) return { verdict: 'wrong', reason: summary };
+  if (results[0] !== 'supported') return { verdict: 'unknown', reason: summary };
+  if (results.length >= 2 && results.every((r) => r === 'supported')) return { verdict: 'ok', reason: summary };
+  return { verdict: 'partial', reason: summary };
 }
 
 // 제목이 정확히 일치하는 문서가 있을 때만 (넘겨주기는 따라간다)
