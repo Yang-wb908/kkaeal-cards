@@ -2,11 +2,11 @@ name: 카드 묶음 만들기
 
 on:
   schedule:
-    - cron: '0 18 * * 0' # 매주 월요일 03:00 (한국 시간)
+    - cron: '0 18 * * 0' # 매주 월요일 03:00 (한국 시간), 카드 90장
   workflow_dispatch:
     inputs:
       count:
-        description: '만들 카드 수, 꼬리 물기 카드 포함 (비우면 첫 실행 300, 이후 150)'
+        description: '만들 카드 수, 꼬리 물기 카드 포함 (비우면 첫 실행 180, 이후 90)'
         required: false
         default: ''
 
