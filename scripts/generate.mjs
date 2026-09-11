@@ -7,13 +7,15 @@
 // 환경 변수
 //   GEMINI_API_KEY  (필수, DRY_RUN=1 이면 없어도 됨)
 //   COUNT           만들 카드 수, 꼬리 물기 카드 포함 (기본: 첫 실행 180, 이후 90 — 메인 카드는 약 1/3)
-//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.5-flash,gemini-3.8-flash)
+//   MODELS          쉼표로 구분한 모델 목록 (기본: gemini-3.8-flash,gemini-3.5-flash — 3.8은 2026년 말까지 요금이 절반 이하)
 //                   Flash-Lite는 더 싸지만 검색을 스스로 하지 않아서 쓰지 않는다
 //   THINKING_LEVEL  minimal | low | medium | high (기본 low)
 //   DELAY_MS        요청 사이 간격 (기본 4000)
 //   MAX_MINUTES     이 시간이 지나면 만든 데까지 저장하고 끝낸다 (기본 240)
 //   GROUNDING=0     Google 검색 그라운딩 끄기 (기본 켜짐: 오늘 기준으로 사실을 검색해 확인)
 //   DRY_RUN=1       API 없이 가짜 카드로 흐름만 확인
+//   BUDGET_KRW      usage.json이 처음 만들어질 때의 예산 (기본 12000). 이후엔 usage.json의 budgetKRW를 고친다
+//   USD_KRW         달러→원 환율 (기본 1400)
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -26,7 +28,7 @@ const INDEX_FILE = path.join(CARDS_DIR, 'index.json');
 
 const DRY = process.env.DRY_RUN === '1';
 const KEY = process.env.GEMINI_API_KEY || '';
-const MODELS = (process.env.MODELS || 'gemini-3.5-flash,gemini-3.8-flash').split(',').map((s) => s.trim()).filter(Boolean);
+const MODELS = (process.env.MODELS || 'gemini-3.8-flash,gemini-3.5-flash').split(',').map((s) => s.trim()).filter(Boolean);
 const THINKING_LEVEL = process.env.THINKING_LEVEL || 'low'; // medium은 생각 토큰이 많아 비용이 몇 배로 뛴다
 const DELAY_MS = Number(process.env.DELAY_MS || (DRY ? 0 : 4000));
 const MAX_MINUTES = Number(process.env.MAX_MINUTES || 240);
@@ -37,6 +39,107 @@ const WEEKLY_COUNT = 90; // 매주 카드 수 (메인 약 30장) — 월 지출 
 const PACK_CARDS = 150; // 묶음 하나에 카드 약 150장 (메인 약 50장 + 꼬리 카드)
 const DEEP_RATIO = 0.4; // 메인 카드 중 심화 지식 비율
 const MAX_FAILURES = 25;
+
+// ───────────────────────── 예상 지출 추적 ─────────────────────────
+// 응답마다 받은 토큰 수로 비용을 계산해 usage.json에 쌓는다. 예산의 80%·100%에 닿으면
+// budget-alert.md를 남기고(워크플로가 이슈로 알림), 100%면 생성을 멈춘다.
+// 실제 청구액과는 환율·반올림 때문에 조금 다를 수 있다.
+
+const USAGE_FILE = path.join(ROOT, 'usage.json');
+const ALERT_FILE = path.join(ROOT, 'budget-alert.md');
+const USD_KRW = Number(process.env.USD_KRW || 1400);
+const FLASH_PROMO = [{ until: '2027-01-01', in: 0.75, out: 3.75 }, { in: 1.5, out: 7.5 }];
+const PRICES = {
+  // 달러 / 100만 토큰. 생각 토큰은 출력 요금
+  'gemini-3.8-flash': FLASH_PROMO,
+  'gemini-3.7-flash': FLASH_PROMO,
+  'gemini-3.6-flash': FLASH_PROMO,
+  'gemini-3.5-flash': [{ in: 1.5, out: 9 }],
+  'gemini-3.5-flash-lite': [{ in: 0.3, out: 2.5 }],
+  'gemini-3.1-flash-lite': [{ in: 0.25, out: 1.5 }],
+};
+const UNKNOWN_PRICE = { in: 1.5, out: 9 }; // 표에 없는 모델은 비싼 쪽으로 잡는다
+const SEARCH_FREE_PER_MONTH = 5000; // Gemini 3.x 검색 그라운딩 무료 횟수 (월)
+const SEARCH_USD_PER_1000 = 14;
+const ALERT_LEVELS = [0.8, 1];
+
+const usage = { data: null, run: { calls: 0, inputTokens: 0, outputTokens: 0, searchQueries: 0, krw: 0 }, alerts: [] };
+
+function priceFor(model, now = new Date()) {
+  const rows = PRICES[model];
+  if (!rows) return UNKNOWN_PRICE;
+  return rows.find((r) => !r.until || now < new Date(r.until)) ?? rows[rows.length - 1];
+}
+
+async function loadUsage() {
+  usage.data = (await readJson(USAGE_FILE, null)) ?? {
+    budgetKRW: Number(process.env.BUDGET_KRW || 12000),
+    since: new Date().toISOString(),
+    spentKRW: 0,
+    searchQueriesByMonth: {},
+    alerted: [],
+    runs: [],
+  };
+}
+
+const budgetLeft = () => usage.data.budgetKRW - usage.data.spentKRW;
+const won = (n) => `₩${Math.round(n).toLocaleString('ko-KR')}`;
+
+function recordCall(model, meta, queries) {
+  if (DRY || !usage.data) return;
+  const price = priceFor(model);
+  const inputTokens = (meta?.promptTokenCount ?? 0) + (meta?.toolUsePromptTokenCount ?? 0);
+  const outputTokens = (meta?.candidatesTokenCount ?? 0) + (meta?.thoughtsTokenCount ?? 0);
+  const month = new Date().toISOString().slice(0, 7);
+  const before = usage.data.searchQueriesByMonth[month] ?? 0;
+  const paidQueries = Math.max(0, before + queries - SEARCH_FREE_PER_MONTH) - Math.max(0, before - SEARCH_FREE_PER_MONTH);
+  usage.data.searchQueriesByMonth[month] = before + queries;
+  const krw = ((inputTokens * price.in + outputTokens * price.out) / 1e6 + (paidQueries * SEARCH_USD_PER_1000) / 1000) * USD_KRW;
+  usage.data.spentKRW = Math.round((usage.data.spentKRW + krw) * 100) / 100;
+  Object.assign(usage.run, {
+    calls: usage.run.calls + 1,
+    inputTokens: usage.run.inputTokens + inputTokens,
+    outputTokens: usage.run.outputTokens + outputTokens,
+    searchQueries: usage.run.searchQueries + queries,
+    krw: usage.run.krw + krw,
+  });
+  const ratio = usage.data.spentKRW / usage.data.budgetKRW;
+  for (const level of ALERT_LEVELS) {
+    if (ratio >= level && !usage.data.alerted.includes(level)) {
+      usage.data.alerted.push(level);
+      usage.alerts.push(level);
+    }
+  }
+}
+
+async function saveUsage(summary) {
+  if (DRY || !usage.data) return;
+  usage.data.runs = [
+    ...usage.data.runs,
+    { at: new Date().toISOString(), ...usage.run, krw: Math.round(usage.run.krw * 100) / 100, summary },
+  ].slice(-30);
+  await fs.writeFile(USAGE_FILE, JSON.stringify(usage.data, null, 1) + '\n');
+  if (!usage.alerts.length) return;
+  const level = Math.max(...usage.alerts);
+  const { budgetKRW, spentKRW, since } = usage.data;
+  const full = level >= 1;
+  const title = `[지출 알림] 카드 생성 예상 지출 ${won(spentKRW)} / ${won(budgetKRW)} (${Math.round(level * 100)}% 도달)`;
+  const body = [
+    `@Yang-wb908 ${since.slice(0, 10)}부터 쌓인 카드 생성 예상 지출이 예산의 ${Math.round(level * 100)}%에 닿았어요.`,
+    '',
+    `- 예상 지출: **${won(spentKRW)}** / 예산 ${won(budgetKRW)}`,
+    `- 이번 실행: ${won(usage.run.krw)} (요청 ${usage.run.calls}회, 검색 ${usage.run.searchQueries}회)`,
+    `- 결과: ${summary}`,
+    '',
+    full
+      ? '예산을 다 써서 **카드 생성을 멈췄어요.** 다시 돌리려면 `usage.json`의 `budgetKRW`를 늘리거나 `spentKRW`를 0으로 바꿔 주세요.'
+      : '아직 생성은 계속돼요. 100%에 닿으면 멈추고 다시 알려 드려요.',
+    '',
+    '토큰 수로 계산한 추정치라 실제 청구액과 조금 다를 수 있어요. 실제 금액은 https://aistudio.google.com/spend 에서 확인하세요.',
+  ].join('\n');
+  await fs.writeFile(ALERT_FILE, `${title}\n\n${body}\n`);
+  console.log(`  지출 알림 작성: ${title}`);
+}
 
 // 앱과 같은 분야 목록 (앱의 Categories.GROUPS 와 맞춰야 한다)
 const GROUPS = [
@@ -228,6 +331,7 @@ async function gemini(prompt) {
           loggedResponseShape = true;
           console.log(`  (응답 확인: ${model} · 검색 정보 ${gm ? Object.keys(gm).join(',') || '빈 값' : '없음'} · 토큰 ${JSON.stringify(data.usageMetadata ?? {})})`);
         }
+        recordCall(model, data.usageMetadata, gm?.webSearchQueries?.length ?? 0);
         if (text.trim()) return { text, grounded };
         lastError = `${model} empty response`;
         continue;
@@ -472,6 +576,13 @@ async function main() {
     process.exit(1);
   }
   await fs.mkdir(PACKS_DIR, { recursive: true });
+  await loadUsage();
+  if (!DRY && budgetLeft() <= 0) {
+    const msg = `예산을 다 써서 생성하지 않아요: 예상 지출 ${won(usage.data.spentKRW)} / ${won(usage.data.budgetKRW)} (usage.json에서 조정)`;
+    console.log(msg);
+    if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, `### 카드 생성 결과\n${msg}\n`);
+    return;
+  }
   const { index, cards: existing } = await loadExisting();
   // 목표는 꼬리 카드까지 합친 전체 장수. 메인 1장당 보통 3장(메인 + 꼬리 2)이 나오므로 메인은 약 1/3,
   // 꼬리 카드가 빠지는 경우를 대비해 계획은 넉넉히 세우고 목표에 닿으면 멈춘다
@@ -514,6 +625,10 @@ async function main() {
 
   for (const [n, item] of plan.entries()) {
     if (madeCards >= target) break;
+    if (!DRY && budgetLeft() <= 0) {
+      stopReason = `예산 ${won(usage.data.budgetKRW)} 도달`;
+      break;
+    }
     if (Date.now() - startedAt > MAX_MINUTES * 60_000) {
       stopReason = `시간 제한 ${MAX_MINUTES}분`;
       break;
@@ -554,10 +669,12 @@ async function main() {
   }
   await flush();
 
-  const summary = `카드 ${madeCards}/${target}장(메인 ${made}장) 생성, 실패 ${failures}회${stopReason ? ` · 중단: ${stopReason}` : ''} · 누적 ${index.totalCards}장`;
+  const spent = DRY ? '' : ` · 이번 예상 지출 ${won(usage.run.krw)} (누적 ${won(usage.data.spentKRW)} / ${won(usage.data.budgetKRW)})`;
+  const summary = `카드 ${madeCards}/${target}장(메인 ${made}장) 생성, 실패 ${failures}회${stopReason ? ` · 중단: ${stopReason}` : ''} · 누적 ${index.totalCards}장${spent}`;
   console.log(summary);
+  await saveUsage(summary);
   if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, `### 카드 생성 결과\n${summary}\n`);
-  if (made === 0 && !DRY) process.exit(1);
+  if (made === 0 && !DRY && budgetLeft() > 0) process.exit(1);
 }
 
 // ───────────────────────── DRY RUN 용 가짜 응답 ─────────────────────────
