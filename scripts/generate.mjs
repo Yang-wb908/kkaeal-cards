@@ -14,8 +14,8 @@
 //   MAX_MINUTES     이 시간이 지나면 만든 데까지 저장하고 끝낸다 (기본 240)
 //   GROUNDING=1     Gemini의 Google 검색 그라운딩도 켜기 (기본 꺼짐 — 모델이 검색을 건너뛰는 일이 많고 비싸다)
 //   DRY_RUN=1       API 없이 가짜 카드로 흐름만 확인
-//   BUDGET_KRW      usage.json이 처음 만들어질 때의 예산 (기본 12000). 이후엔 usage.json의 budgetKRW를 고친다
-//   USD_KRW         달러→원 환율 (기본 1400)
+//   BUDGET_KRW      usage.json이 처음 만들어질 때의 예산 (기본 20000). 이후엔 usage.json의 budgetKRW를 고친다
+//   USD_KRW         달러→원 환율 (기본 1550 — 환율에 부가세 10%와 약간의 여유를 더한 값)
 
 import fs from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
@@ -37,7 +37,7 @@ const GROUNDING = process.env.GROUNDING === '1';
 const WIKI_TEXT_MAX = 20000; // 대조할 때 모델에 넘기는 위키백과 본문 최대 글자 수
 const TODAY = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); // YYYY-MM-DD (한국 시간)
 const FIRST_COUNT = 90; // 첫 실행 카드 수
-const WEEKLY_COUNT = 45; // 매주 카드 수 (메인 약 15장) — 예산 ₩12,000으로 한두 달 가도록 맞춘 양
+const WEEKLY_COUNT = 45; // 매주 카드 수 (메인 약 15장)
 const PACK_CARDS = 150; // 묶음 하나에 카드 약 150장 (메인 약 50장 + 꼬리 카드)
 const DEEP_RATIO = 0.4; // 메인 카드 중 심화 지식 비율
 const MAX_FAILURES = 25;
@@ -49,7 +49,7 @@ const MAX_FAILURES = 25;
 
 const USAGE_FILE = path.join(ROOT, 'usage.json');
 const ALERT_FILE = path.join(ROOT, 'budget-alert.md');
-const USD_KRW = Number(process.env.USD_KRW || 1400);
+const USD_KRW = Number(process.env.USD_KRW || 1550); // 실제 청구액과 비교해 보니 1400으로는 15% 정도 적게 잡혔다
 const FLASH_PROMO = [{ until: '2027-01-01', in: 0.75, out: 3.75 }, { in: 1.5, out: 7.5 }];
 const PRICES = {
   // 달러 / 100만 토큰. 생각 토큰은 출력 요금
@@ -75,7 +75,7 @@ function priceFor(model, now = new Date()) {
 
 async function loadUsage() {
   usage.data = (await readJson(USAGE_FILE, null)) ?? {
-    budgetKRW: Number(process.env.BUDGET_KRW || 12000),
+    budgetKRW: Number(process.env.BUDGET_KRW || 20000),
     since: new Date().toISOString(),
     spentKRW: 0,
     searchQueriesByMonth: {},
