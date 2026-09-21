@@ -1,3 +1,22 @@
+# Daily Trivia Cards
+
+Card data for the **Daily Trivia** Android app, regenerated every week by a GitHub Actions workflow. The app ships no content of its own; it reads what this repository publishes.
+
+Every Monday at 03:00 KST the workflow generates a new batch of about 45 cards with Gemini, and then **verifies each one against Wikipedia before publishing**. For every card it fetches the referenced article, checks the claim against the article body, retries against the English article when the Korean one is inconclusive, and confirms in code that the sentence the verdict rests on actually appears in the source. Only cards that pass are marked `verified: true` and carry a source badge in the app.
+
+| Path | Purpose |
+| --- | --- |
+| `cards/index.json` | Pack index, the first file the app reads |
+| `cards/packs/<id>.json` | Card packs, up to about 150 cards each |
+| `scripts/generate.mjs` | Generator. No dependencies, Node 20+ |
+| `.github/workflows/` | Weekly generation workflow |
+
+Fact-checking is not delegated to the model's own search. The verification step is a separate pass against Wikipedia, because a model asked to check itself will usually agree with itself.
+
+---
+
+아래는 한국어 원문입니다.
+
 # 오늘의 깨알 카드
 
 '오늘의 깨알' 앱이 내려받는 카드 묶음 저장소입니다. 앱 코드와 API 키는 여기에 없고, 카드 JSON만 공개합니다.
